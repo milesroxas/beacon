@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# pnpm
+.pnpm-store/
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+
+# Vite / Webflow
+dist/
+bundle/
+public/**/*.zip
+
+# Test coverage
+coverage/
+
+# Caches
+.cache/
+.parcel-cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+
+# Other package managers (this repo uses pnpm)
+package-lock.json
+yarn.lock

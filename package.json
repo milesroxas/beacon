@@ -1,0 +1,40 @@
+{
+  "name": "beacon",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/build-cli.js",
+    "build:prod": "tsc && vite build --mode production && webflow extension bundle && mkdir -p bundle/prod/${VITE_BUNDLE_RECIPIENT:-internal} && mv bundle.zip bundle/prod/${VITE_BUNDLE_RECIPIENT:-internal}/v$(node -p \"require('./package.json').version\")_${VITE_BUNDLE_RECIPIENT:-internal}_$(date +'%m-%d_%H-%M-%S').zip",
+    "build:dev": "tsc && vite build --mode development && webflow extension bundle && mkdir -p bundle/development/${VITE_BUNDLE_RECIPIENT:-internal} && mv bundle.zip bundle/development/${VITE_BUNDLE_RECIPIENT:-internal}/v$(node -p \"require('./package.json').version\")_${VITE_BUNDLE_RECIPIENT:-internal}_$(date +'%m-%d_%H-%M-%S').zip",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check . && node scripts/assert-no-biome-ignore.mjs",
+    "lint:fix": "biome check --write .",
+    "lint:all": "pnpm typecheck && pnpm lint",
+    "format": "biome format --write .",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:watch": "vitest --watch",
+    "test:coverage": "vitest run --coverage"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
+    "@clack/prompts": "^1.0.1",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^3.2.4",
+    "@webflow/designer-extension-typings": "^2.0.19",
+    "chokidar": "^4.0.3",
+    "picocolors": "^1.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.0.0",
+    "vitest": "^3.2.4"
+  }
+}

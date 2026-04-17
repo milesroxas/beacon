@@ -1,0 +1,6 @@
+{
+  "name": "beacon",
+  "publicDir": "dist",
+  "size": "custom",
+  "apiVersion": "2"
+}
