@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import fs from "node:fs";
 import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import chokidar from "chokidar";
 import { defineConfig, type Plugin } from "vite";
@@ -74,7 +75,7 @@ const wfDesignerExtensionPlugin = (): Plugin => {
 
 export default defineConfig(({ mode }) => ({
   base: "./",
-  plugins: [react(), wfDesignerExtensionPlugin()],
+  plugins: [tailwindcss(), react(), wfDesignerExtensionPlugin()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __BUILD_CHANNEL__: JSON.stringify(mode),
