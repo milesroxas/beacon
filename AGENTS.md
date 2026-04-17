@@ -109,3 +109,30 @@ Typed events include (see `api.d.ts`): `selectedelement`, `mediaquery`, `current
 - **Scripts**: See `package.json` for `dev`, `build`, and lint commands used in this project.
 
 When behavior is ambiguous, prefer the official reference page for that method (from `llms.txt`) over assumptions.
+
+## Feature-Sliced Design (FSD)
+
+Structure UI and domain code by **layers** (dependency rule: a higher layer may import from lower layers; not the reverse):
+
+| Layer | Role |
+| --- | --- |
+| **`app`** | App shell, global styles entry, providers, routing if added. |
+| **`pages`** | Route-level composition only; thin wiring. |
+| **`widgets`** | Composite blocks reused across pages (compose **features** and **entities**). |
+| **`features`** | User-facing interactions and use-cases (one feature = one folder with **public API**). |
+| **`entities`** | Business nouns, models, and entity-specific UI pieces. |
+| **`shared`** | Cross-cutting primitives: **UI kit** (e.g. shadcn under `shared/ui`), hooks, utilities, config. |
+
+Within a slice, use **segments** such as `ui/`, `model/`, `api/`, `lib/` as needed. Export only through the slice’s **public API** (e.g. `index.ts`) so consumers depend on stable boundaries.
+
+**DRY / single source of truth**: Define behavior and presentation **once** per slice; avoid copying markup or style rules into multiple features. Prefer shared helpers and composed components over duplicated JSX or CSS.
+
+## shadcn / `@/shared/ui`
+
+This repo uses **shadcn/ui** (see `components.json`; components live under **`src/shared/ui`** via the `@/shared/ui` alias).
+
+- **Call sites do not own styling.** Do not add Tailwind classes, inline styles, or ad hoc `className` overrides at usage sites to change how a primitive looks (colors, spacing, borders, typography, states). That duplicates the design system and breaks a single source of truth.
+- **Prefer `variant` and component API** defined on the primitive: extend the shadcn component with `class-variance-authority` (or the project’s existing pattern) so sizes, intents, and states are named and centralized.
+- **Extend in `shared/ui` only when necessary.** If a new visual or behavior is required, add or adjust the component file (or a thin wrapper next to it) under `shared/ui`, then consume the stable API elsewhere. Reserve one-off `className` at call sites for **non-visual layout** only when unavoidable (e.g. flex/grid slotting that cannot live in the primitive without harming reuse)—and keep it minimal.
+
+When a task explicitly says to use shadcn, **add or compose from `shared/ui`**, not bespoke styled elements in features or pages.
