@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import chokidar from "chokidar";
 import { defineConfig, type Plugin } from "vite";
 import pkg from "./package.json";
 
@@ -49,33 +48,36 @@ const wfDesignerExtensionPlugin = (): Plugin => {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "*",
           });
-          res.end(configContent);
+          res.end(fs.readFileSync(configPath, "utf-8"));
         } else {
           next();
         }
-      });
-
-      const watcher = chokidar.watch(["./src/**/*.tsx", "./src/**/*.ts", "./src/**/*.css"], {
-        ignoreInitial: true,
-        persistent: true,
-      });
-
-      watcher.on("all", (event, filePath) => {
-        console.log("\x1b[33m%s\x1b[0m", `File ${filePath} has been ${event}, restarting server...`);
-
-        void server.restart();
-      });
-
-      server?.httpServer?.on("close", () => {
-        void watcher.close();
       });
     },
   };
 };
 
+/** Force @jsquash/avif to use the single-thread encoder so the build never pulls avif_enc_mt (+ workers). */
+const jsquashAvifSingleThread = (): Plugin => ({
+  name: "jsquash-avif-single-thread",
+  enforce: "pre",
+  resolveId(id, importer) {
+    const enc = path.resolve(__dirname, "node_modules/@jsquash/avif/codec/enc/avif_enc.js");
+    const idN = id.replace(/\\/g, "/");
+    const impN = importer?.replace(/\\/g, "/") ?? "";
+    if (impN.includes("@jsquash/avif/encode.js") && idN.endsWith("codec/enc/avif_enc_mt.js")) {
+      return enc;
+    }
+    if (idN.includes("@jsquash/avif/codec/enc/avif_enc_mt.js")) {
+      return enc;
+    }
+    return undefined;
+  },
+});
+
 export default defineConfig(({ mode }) => ({
   base: "./",
-  plugins: [tailwindcss(), react(), wfDesignerExtensionPlugin()],
+  plugins: [tailwindcss(), react(), wfDesignerExtensionPlugin(), jsquashAvifSingleThread()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __BUILD_CHANNEL__: JSON.stringify(mode),
@@ -84,6 +86,7 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "wasm-feature-detect": path.resolve(__dirname, "./src/shims/wasm-feature-detect.ts"),
     },
   },
   server: {
@@ -91,6 +94,10 @@ export default defineConfig(({ mode }) => ({
     watch: {
       usePolling: true,
     },
+  },
+  /** Prebundling strips sibling `avif_enc.wasm`; without it, fetches hit the SPA fallback (HTML) and WASM fails. */
+  optimizeDeps: {
+    exclude: ["@jsquash/avif"],
   },
   build: {
     outDir: "dist",
