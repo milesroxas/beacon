@@ -17,6 +17,7 @@ import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/shared/ui/radio-group";
 import { ScrollArea } from "@/shared/ui/scroll-area";
 import { Separator } from "@/shared/ui/separator";
 import { Slider } from "@/shared/ui/slider";
@@ -28,6 +29,8 @@ type AspectPreset = "free" | "1" | "16-9" | "4-3" | "3-2" | "9-16";
 
 /** Aspect ratio templates vs. W×H-driven crop frame (same slot in the UI). */
 type CropFrameMode = "aspect" | "custom";
+
+type ComponentImagePropOption = { propId: string; label: string };
 
 /** Encode is expensive (AVIF/WASM); debounce so sliders do not queue hundreds of runs. */
 const ESTIMATE_DEBOUNCE_MS = 400;
@@ -77,6 +80,8 @@ export function ImageEditor() {
   const [estimateNonce, setEstimateNonce] = useState(0);
   const estimateGenRef = useRef(0);
   const lastInvalidatedGeometryKeyRef = useRef("");
+  const [componentImageProps, setComponentImageProps] = useState<ComponentImagePropOption[]>([]);
+  const [selectedComponentImagePropId, setSelectedComponentImagePropId] = useState<string | null>(null);
 
   const effectiveOutputW = useMemo(() => parseOutputDimension(widthStr, outputWidth), [widthStr, outputWidth]);
   const effectiveOutputH = useMemo(() => parseOutputDimension(heightStr, outputHeight), [heightStr, outputHeight]);
@@ -95,6 +100,46 @@ export function ImageEditor() {
   useEffect(() => {
     void webflow.setExtensionSize({ width: 420, height: 820 });
   }, []);
+
+  const refreshComponentImageProps = useCallback(async (el: AnyElement | null) => {
+    try {
+      if (el?.type !== "ComponentInstance") {
+        setComponentImageProps([]);
+        setSelectedComponentImagePropId(null);
+        return;
+      }
+      const instance = el as ComponentElement;
+      const props = await instance.searchProps({ valueType: "imageAsset" });
+      const opts: ComponentImagePropOption[] = props.map((p) => ({
+        propId: p.propId,
+        label: p.display.label,
+      }));
+      setComponentImageProps(opts);
+      setSelectedComponentImagePropId((prev) => {
+        if (opts.length === 0) {
+          return null;
+        }
+        if (opts.length === 1) {
+          return opts[0].propId;
+        }
+        if (prev && opts.some((o) => o.propId === prev)) {
+          return prev;
+        }
+        return opts[0].propId;
+      });
+    } catch {
+      setComponentImageProps([]);
+      setSelectedComponentImagePropId(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void webflow.getSelectedElement().then((el) => void refreshComponentImageProps(el));
+    const unsub = webflow.subscribe("selectedelement", (el) => {
+      void refreshComponentImageProps(el);
+    });
+    return unsub;
+  }, [refreshComponentImageProps]);
 
   const revokePrevious = useCallback(
     (next: string | null) => {
@@ -250,6 +295,7 @@ export function ImageEditor() {
         quality,
         replaceOnly,
         fileBaseName: safeName,
+        componentImagePropId: componentImageProps.length > 1 ? selectedComponentImagePropId : null,
       });
       if (result.kind === "success") {
         await webflow.notify({ type: "Success", message: result.message });
@@ -263,7 +309,17 @@ export function ImageEditor() {
     } finally {
       setBusy(false);
     }
-  }, [imageSrc, completedCrop, effectiveOutputW, effectiveOutputH, quality, replaceOnly, fileBaseName]);
+  }, [
+    imageSrc,
+    completedCrop,
+    effectiveOutputW,
+    effectiveOutputH,
+    quality,
+    replaceOnly,
+    fileBaseName,
+    componentImageProps.length,
+    selectedComponentImagePropId,
+  ]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -535,10 +591,41 @@ export function ImageEditor() {
                       Replace selected Image only
                     </Label>
                     <p className="text-muted-foreground text-xs leading-snug">
-                      Skips placing a new image when an Image is selected.
+                      Skips placing a new image when an Image is selected. Does not apply when a component instance with
+                      an image prop is selected.
                     </p>
                   </div>
                 </section>
+                {componentImageProps.length > 0 ? (
+                  <>
+                    <Separator className="my-4" />
+                    <section className="flex flex-col gap-2">
+                      <Label className="text-muted-foreground text-xs" htmlFor={`${baseId}-comp-prop`}>
+                        Component image prop
+                      </Label>
+                      {componentImageProps.length === 1 ? (
+                        <p className="text-xs leading-snug" id={`${baseId}-comp-prop`}>
+                          Applies to: {componentImageProps[0].label}
+                        </p>
+                      ) : (
+                        <RadioGroup
+                          id={`${baseId}-comp-prop`}
+                          value={selectedComponentImagePropId ?? ""}
+                          onValueChange={(v) => setSelectedComponentImagePropId(v)}
+                        >
+                          {componentImageProps.map((o) => (
+                            <div key={o.propId} className="flex items-center gap-2">
+                              <RadioGroupItem value={o.propId} id={`${baseId}-comp-${o.propId}`} />
+                              <Label className="font-normal" htmlFor={`${baseId}-comp-${o.propId}`}>
+                                {o.label}
+                              </Label>
+                            </div>
+                          ))}
+                        </RadioGroup>
+                      )}
+                    </section>
+                  </>
+                ) : null}
                 <Separator className="my-4" />
                 <section>
                   <Button type="button" className="w-full" disabled={busy} onClick={() => void applyToCanvas()}>

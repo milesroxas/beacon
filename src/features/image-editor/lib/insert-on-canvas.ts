@@ -2,8 +2,7 @@ function hasAppend(el: AnyElement): boolean {
   return typeof (el as { append?: unknown }).append === "function";
 }
 
-export async function placeImageOnCanvas(file: File, replaceSelectedImage: boolean): Promise<void> {
-  const asset = await webflow.createAsset(file);
+export async function placeImageOnCanvasWithAsset(asset: Asset, replaceSelectedImage: boolean): Promise<void> {
   const preset = webflow.elementPresets.Image;
   const selected = await webflow.getSelectedElement();
 
@@ -47,4 +46,9 @@ export async function placeImageOnCanvas(file: File, replaceSelectedImage: boole
   const created = (await body.append(preset)) as ImageElement;
   await created.setAsset(asset);
   await webflow.setSelectedElement(created);
+}
+
+export async function placeImageOnCanvas(file: File, replaceSelectedImage: boolean): Promise<void> {
+  const asset = await webflow.createAsset(file);
+  await placeImageOnCanvasWithAsset(asset, replaceSelectedImage);
 }
