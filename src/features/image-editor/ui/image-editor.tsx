@@ -1,39 +1,178 @@
-import { Crop, FileImage, SlidersHorizontal, Upload } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { FileImage, Upload } from "lucide-react";
+import type { DragEvent, RefObject, TransitionEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Area } from "react-easy-crop";
-import Cropper from "react-easy-crop";
 
 import {
   applyCroppedImageToWebflow,
   MAX_EDGE,
+  type PlacementMode,
   parseOutputDimension,
 } from "@/features/image-editor/lib/apply-cropped-export";
-import { estimateEncodedOutputBytes, fetchUrlByteLength } from "@/features/image-editor/lib/estimate-encoded-size";
+import { estimateEncodedOutputBytes } from "@/features/image-editor/lib/estimate-encoded-size";
 import { getExportGeometryKey } from "@/features/image-editor/lib/export-geometry-key";
 import { loadImage } from "@/features/image-editor/lib/load-image";
 import { sanitizeAssetBaseName } from "@/features/image-editor/lib/sanitize-asset-base-name";
-import { ExportSizeEstimate } from "@/features/image-editor/ui/export-size-estimate";
+import {
+  type AspectPreset,
+  type AssetFolderRow,
+  type ComponentImagePropOption,
+  type CropFrameMode,
+  ImageEditorCropExportPanel,
+} from "@/features/image-editor/ui/image-editor-crop-export-panel";
+import { cn } from "@/shared/lib/utils";
 import { Button } from "@/shared/ui/button";
-import { Checkbox } from "@/shared/ui/checkbox";
-import { Input } from "@/shared/ui/input";
-import { Label } from "@/shared/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/shared/ui/radio-group";
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { ScrollArea } from "@/shared/ui/scroll-area";
-import { Separator } from "@/shared/ui/separator";
-import { Slider } from "@/shared/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
-import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
-type AspectPreset = "free" | "1" | "16-9" | "4-3" | "3-2" | "9-16";
+/** Designer typings omit `getParent` on `AssetFolder`; runtime supports it (see Webflow docs). */
+async function getAssetFolderParentFolder(handle: AssetFolder): Promise<AssetFolder | null> {
+  const h = handle as AssetFolder & { getParent?: () => Promise<AssetFolder | null> };
+  try {
+    return (await h.getParent?.()) ?? null;
+  } catch {
+    return null;
+  }
+}
 
-/** Aspect ratio templates vs. W×H-driven crop frame (same slot in the UI). */
-type CropFrameMode = "aspect" | "custom";
-
-type ComponentImagePropOption = { propId: string; label: string };
+function resolveSelectedAssetFolderHandle(
+  selectedAssetFolderId: string | null,
+  assetFolders: AssetFolderRow[]
+): AssetFolder | undefined {
+  if (selectedAssetFolderId === null) {
+    return undefined;
+  }
+  return assetFolders.find((f) => f.id === selectedAssetFolderId)?.handle;
+}
 
 /** Encode is expensive (AVIF/WASM); debounce so sliders do not queue hundreds of runs. */
 const ESTIMATE_DEBOUNCE_MS = 400;
+
+const OUTGOING_FADE_CLASS = "transition-opacity duration-[380ms] ease-out will-change-[opacity] transform-gpu";
+
+const INCOMING_STAGGER_BASE_CLASS =
+  "transition-[opacity,transform] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[opacity,transform] transform-gpu duration-300";
+
+function IncomingDissolvePreview(props: {
+  imageUrl: string;
+  fileBaseName: string;
+  entered: boolean;
+  onEntranceComplete?: () => void;
+}) {
+  const { imageUrl, fileBaseName, entered, onEntranceComplete } = props;
+  return (
+    <div className="flex flex-col gap-3">
+      <p
+        className={cn(
+          INCOMING_STAGGER_BASE_CLASS,
+          "text-muted-foreground min-w-0 truncate text-xs leading-snug",
+          entered ? "translate-y-0 opacity-100 [transition-delay:0ms]" : "translate-y-2 opacity-0"
+        )}
+        title={fileBaseName}
+      >
+        <span className="text-foreground font-medium">Source: </span>
+        {fileBaseName}
+      </p>
+      <div
+        className={cn(
+          INCOMING_STAGGER_BASE_CLASS,
+          "aspect-video overflow-hidden rounded-xl bg-muted/50 ring-1 ring-foreground/10",
+          entered
+            ? "translate-y-0 opacity-100 [transition-delay:90ms]"
+            : "translate-y-3 opacity-0 [transition-delay:0ms]"
+        )}
+        onTransitionEnd={(e) => {
+          if (e.target !== e.currentTarget || e.propertyName !== "opacity") {
+            return;
+          }
+          onEntranceComplete?.();
+        }}
+      >
+        <img alt="" className="size-full object-contain" decoding="async" src={imageUrl} />
+      </div>
+    </div>
+  );
+}
+
+function DropzoneCard(props: {
+  className: string;
+  fileInputId: string;
+  onDragEnter: (e: DragEvent) => void;
+  onDragLeave: (e: DragEvent) => void;
+  onDragOver: (e: DragEvent) => void;
+  onDrop: (e: DragEvent) => void;
+}) {
+  const { className, fileInputId, onDragEnter, onDragLeave, onDragOver, onDrop } = props;
+  return (
+    <label
+      className={className}
+      htmlFor={fileInputId}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      <span className="flex flex-col items-center gap-2 text-center">
+        <Upload aria-hidden className="size-8 text-muted-foreground" />
+        <span className="text-muted-foreground text-xs">Drop an image, or browse.</span>
+        <span className="inline-flex items-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 py-1 text-[0.8rem] font-medium text-primary-foreground">
+          <FileImage aria-hidden className="size-3.5" />
+          Browse files
+        </span>
+      </span>
+    </label>
+  );
+}
+
+function EmptyImageSourceSection(props: {
+  fileInputId: string;
+  dropZoneLabelClass: string;
+  handleDrag: (e: DragEvent) => void;
+  handleDragState: (e: DragEvent, active: boolean) => void;
+  handleDrop: (e: DragEvent) => void;
+}) {
+  const { fileInputId, dropZoneLabelClass, handleDrag, handleDragState, handleDrop } = props;
+  return (
+    <DropzoneCard
+      className={dropZoneLabelClass}
+      fileInputId={fileInputId}
+      onDragEnter={(e) => handleDragState(e, true)}
+      onDragLeave={(e) => handleDragState(e, false)}
+      onDragOver={handleDrag}
+      onDrop={handleDrop}
+    />
+  );
+}
+
+function LoadedImageSourceSection(props: {
+  fileBaseName: string;
+  busy: boolean;
+  fileInputRef: RefObject<HTMLInputElement | null>;
+}) {
+  const { fileBaseName, busy, fileInputRef } = props;
+  return (
+    <Card size="sm">
+      <CardHeader className="space-y-1 pb-2">
+        <CardTitle className="text-sm font-medium">Source image</CardTitle>
+        <CardDescription className="min-w-0 truncate text-xs leading-snug" title={fileBaseName}>
+          {fileBaseName}
+        </CardDescription>
+        <CardAction>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload aria-hidden className="size-3.5" />
+            Change image
+          </Button>
+        </CardAction>
+      </CardHeader>
+    </Card>
+  );
+}
 
 function aspectValue(preset: AspectPreset): number | undefined {
   switch (preset) {
@@ -56,8 +195,8 @@ function aspectValue(preset: AspectPreset): number | undefined {
 
 export function ImageEditor() {
   const baseId = useId();
-  const replaceId = `${baseId}-replace`;
   const fileInputId = `${baseId}-file`;
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
@@ -71,7 +210,12 @@ export function ImageEditor() {
   const [fileBaseName, setFileBaseName] = useState("edited");
   const [quality, setQuality] = useState(0.75);
   const [busy, setBusy] = useState(false);
-  const [replaceOnly, setReplaceOnly] = useState(false);
+  const [assetFolders, setAssetFolders] = useState<AssetFolderRow[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [folderActionBusy, setFolderActionBusy] = useState(false);
+  const [selectedAssetFolderId, setSelectedAssetFolderId] = useState<string | null>(null);
+  const [placement, setPlacement] = useState<PlacementMode>("selection");
+  const [replaceLibraryAsset, setReplaceLibraryAsset] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [originalBytes, setOriginalBytes] = useState<number | null>(null);
   const [estimatedBytes, setEstimatedBytes] = useState<number | null>(null);
@@ -82,6 +226,18 @@ export function ImageEditor() {
   const lastInvalidatedGeometryKeyRef = useRef("");
   const [componentImageProps, setComponentImageProps] = useState<ComponentImagePropOption[]>([]);
   const [selectedComponentImagePropId, setSelectedComponentImagePropId] = useState<string | null>(null);
+  const [selectedElementType, setSelectedElementType] = useState<string | null>(null);
+  const [componentImagePropsResolving, setComponentImagePropsResolving] = useState(false);
+  const componentPropsResolveGenRef = useRef(0);
+  const [dissolve, setDissolve] = useState<
+    { phase: "idle" } | { phase: "dissolving"; incomingUrl: string; incomingFile: File }
+  >({ phase: "idle" });
+  const [beginOutgoingFade, setBeginOutgoingFade] = useState(false);
+  const [showIncomingPreview, setShowIncomingPreview] = useState(false);
+  const [incomingEnter, setIncomingEnter] = useState(false);
+  const dissolveRef = useRef(dissolve);
+  dissolveRef.current = dissolve;
+  const dissolveSettledRef = useRef(false);
 
   const effectiveOutputW = useMemo(() => parseOutputDimension(widthStr, outputWidth), [widthStr, outputWidth]);
   const effectiveOutputH = useMemo(() => parseOutputDimension(heightStr, outputHeight), [heightStr, outputHeight]);
@@ -98,18 +254,117 @@ export function ImageEditor() {
   }, [cropFrameMode, effectiveOutputW, effectiveOutputH, aspectPreset]);
 
   useEffect(() => {
-    void webflow.setExtensionSize({ width: 420, height: 820 });
+    void webflow.setExtensionSize({ width: 440, height: 880 });
   }, []);
 
-  const refreshComponentImageProps = useCallback(async (el: AnyElement | null) => {
+  const refreshAssetFolders = useCallback(async () => {
+    setFoldersLoading(true);
     try {
-      if (el?.type !== "ComponentInstance") {
-        setComponentImageProps([]);
-        setSelectedComponentImagePropId(null);
-        return;
+      const handles = await webflow.getAllAssetFolders();
+      const partial: {
+        handle: AssetFolder;
+        id: string;
+        name: string;
+        parentId: string | null;
+      }[] = [];
+
+      for (const handle of handles) {
+        const name = (await handle.getName()).trim() || "Folder";
+        const parent = await getAssetFolderParentFolder(handle);
+        const parentId = parent?.id ?? null;
+        partial.push({ handle, id: handle.id, name, parentId });
       }
+
+      const byId = new Map(partial.map((row) => [row.id, row]));
+
+      const pathLabelFor = (id: string, seen = new Set<string>()): string => {
+        if (seen.has(id)) {
+          return byId.get(id)?.name ?? "";
+        }
+        seen.add(id);
+        const row = byId.get(id);
+        if (!row) {
+          return "";
+        }
+        if (!row.parentId) {
+          return row.name;
+        }
+        const parentPath = pathLabelFor(row.parentId, seen);
+        return parentPath ? `${parentPath} / ${row.name}` : row.name;
+      };
+
+      const rows: AssetFolderRow[] = partial.map((p) => ({
+        ...p,
+        pathLabel: pathLabelFor(p.id),
+      }));
+      rows.sort((a, b) => a.pathLabel.localeCompare(b.pathLabel));
+      setAssetFolders(rows);
+    } catch {
+      setAssetFolders([]);
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
+
+  const createAssetFolderNamed = useCallback(
+    async (name: string, parentFolderId: string | null): Promise<boolean> => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return false;
+      }
+      setFolderActionBusy(true);
+      try {
+        const folder =
+          parentFolderId !== null
+            ? await webflow.createAssetFolder(trimmed, parentFolderId)
+            : await webflow.createAssetFolder(trimmed);
+        await refreshAssetFolders();
+        setSelectedAssetFolderId(folder.id);
+        return true;
+      } catch {
+        await webflow.notify({ type: "Error", message: "Could not create folder." });
+        return false;
+      } finally {
+        setFolderActionBusy(false);
+      }
+    },
+    [refreshAssetFolders]
+  );
+
+  useEffect(() => {
+    if (!imageSrc) {
+      return;
+    }
+    void refreshAssetFolders();
+  }, [imageSrc, refreshAssetFolders]);
+
+  useEffect(() => {
+    if (selectedAssetFolderId === null) {
+      return;
+    }
+    if (!assetFolders.some((f) => f.id === selectedAssetFolderId)) {
+      setSelectedAssetFolderId(null);
+    }
+  }, [assetFolders, selectedAssetFolderId]);
+
+  const refreshComponentImageProps = useCallback(async (el: AnyElement | null) => {
+    const gen = ++componentPropsResolveGenRef.current;
+    setSelectedElementType(el?.type ?? null);
+
+    if (el?.type !== "ComponentInstance") {
+      setComponentImagePropsResolving(false);
+      setComponentImageProps([]);
+      setSelectedComponentImagePropId(null);
+      return;
+    }
+
+    setComponentImagePropsResolving(true);
+    try {
       const instance = el as ComponentElement;
       const props = await instance.searchProps({ valueType: "imageAsset" });
+      if (gen !== componentPropsResolveGenRef.current) {
+        return;
+      }
       const opts: ComponentImagePropOption[] = props.map((p) => ({
         propId: p.propId,
         label: p.display.label,
@@ -128,8 +383,15 @@ export function ImageEditor() {
         return opts[0].propId;
       });
     } catch {
+      if (gen !== componentPropsResolveGenRef.current) {
+        return;
+      }
       setComponentImageProps([]);
       setSelectedComponentImagePropId(null);
+    } finally {
+      if (gen === componentPropsResolveGenRef.current) {
+        setComponentImagePropsResolving(false);
+      }
     }
   }, []);
 
@@ -140,16 +402,6 @@ export function ImageEditor() {
     });
     return unsub;
   }, [refreshComponentImageProps]);
-
-  const revokePrevious = useCallback(
-    (next: string | null) => {
-      if (imageSrc?.startsWith("blob:")) {
-        URL.revokeObjectURL(imageSrc);
-      }
-      setImageSrc(next);
-    },
-    [imageSrc]
-  );
 
   useEffect(
     () => () => {
@@ -183,42 +435,86 @@ export function ImageEditor() {
       });
   }, [imageSrc]);
 
-  const onFile = useCallback(
-    (file: File | undefined) => {
-      if (!file?.type.startsWith("image/")) {
+  const queueFile = useCallback((file: File | undefined) => {
+    if (!file?.type.startsWith("image/")) {
+      return;
+    }
+    if (dissolveRef.current.phase === "dissolving") {
+      return;
+    }
+    const incomingUrl = URL.createObjectURL(file);
+    setDissolve({ phase: "dissolving", incomingUrl, incomingFile: file });
+    dissolveSettledRef.current = false;
+  }, []);
+
+  const finishDissolve = useCallback(() => {
+    const d = dissolveRef.current;
+    if (d.phase !== "dissolving") {
+      return;
+    }
+    if (dissolveSettledRef.current) {
+      return;
+    }
+    dissolveSettledRef.current = true;
+    const { incomingUrl, incomingFile } = d;
+    setOriginalBytes(incomingFile.size);
+    const stem = incomingFile.name.includes(".")
+      ? incomingFile.name.slice(0, incomingFile.name.lastIndexOf("."))
+      : incomingFile.name;
+    setFileBaseName(sanitizeAssetBaseName(stem || "edited"));
+    setImageSrc((prev) => {
+      if (prev?.startsWith("blob:")) {
+        URL.revokeObjectURL(prev);
+      }
+      return incomingUrl;
+    });
+    setDissolve({ phase: "idle" });
+    setBeginOutgoingFade(false);
+    setShowIncomingPreview(false);
+    setIncomingEnter(false);
+  }, []);
+
+  const handleOutgoingFadeComplete = useCallback(
+    (e: TransitionEvent<HTMLDivElement>) => {
+      if (e.target !== e.currentTarget || e.propertyName !== "opacity" || !beginOutgoingFade) {
         return;
       }
-      setOriginalBytes(file.size);
-      const stem = file.name.includes(".") ? file.name.slice(0, file.name.lastIndexOf(".")) : file.name;
-      setFileBaseName(sanitizeAssetBaseName(stem || "edited"));
-      revokePrevious(URL.createObjectURL(file));
+      setShowIncomingPreview(true);
     },
-    [revokePrevious]
+    [beginOutgoingFade]
   );
 
-  const loadFromSelection = useCallback(async () => {
-    const el = await webflow.getSelectedElement();
-    if (el?.type !== "Image") {
-      await webflow.notify({
-        type: "Info",
-        message: "Select an Image element on the canvas, then try again.",
-      });
+  useLayoutEffect(() => {
+    if (dissolve.phase !== "dissolving") {
       return;
     }
-    const asset = await el.getAsset();
-    if (!asset) {
-      await webflow.notify({
-        type: "Warning",
-        message: "The selected Image has no asset.",
+    setBeginOutgoingFade(false);
+    setShowIncomingPreview(false);
+    setIncomingEnter(false);
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setBeginOutgoingFade(true);
       });
+    });
+    return () => {
+      cancelAnimationFrame(id);
+    };
+  }, [dissolve]);
+
+  useLayoutEffect(() => {
+    if (!showIncomingPreview) {
       return;
     }
-    const url = await asset.getUrl();
-    const size = await fetchUrlByteLength(url);
-    setOriginalBytes(size);
-    setFileBaseName("edited");
-    revokePrevious(url);
-  }, [revokePrevious]);
+    setIncomingEnter(false);
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setIncomingEnter(true);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(id);
+    };
+  }, [showIncomingPreview]);
 
   useEffect(() => {
     const geometryKey = getExportGeometryKey(imageSrc, completedCrop, effectiveOutputW, effectiveOutputH);
@@ -277,6 +573,14 @@ export function ImageEditor() {
       });
       return;
     }
+    const targetFolder = resolveSelectedAssetFolderHandle(selectedAssetFolderId, assetFolders);
+    if (!targetFolder) {
+      await webflow.notify({
+        type: "Warning",
+        message: "Choose an Assets folder first.",
+      });
+      return;
+    }
     setBusy(true);
     try {
       const w = effectiveOutputW;
@@ -287,15 +591,18 @@ export function ImageEditor() {
       setHeightStr(String(h));
       const safeName = sanitizeAssetBaseName(fileBaseName);
       setFileBaseName(safeName);
+
       const result = await applyCroppedImageToWebflow({
         imageSrc,
         completedCrop,
         outputWidth: w,
         outputHeight: h,
         quality,
-        replaceOnly,
         fileBaseName: safeName,
         componentImagePropId: componentImageProps.length > 1 ? selectedComponentImagePropId : null,
+        targetFolder,
+        placement,
+        replaceLibraryAsset: placement === "replace" ? replaceLibraryAsset : false,
       });
       if (result.kind === "success") {
         await webflow.notify({ type: "Success", message: result.message });
@@ -315,334 +622,166 @@ export function ImageEditor() {
     effectiveOutputW,
     effectiveOutputH,
     quality,
-    replaceOnly,
     fileBaseName,
     componentImageProps.length,
     selectedComponentImagePropId,
+    selectedAssetFolderId,
+    assetFolders,
+    placement,
+    replaceLibraryAsset,
   ]);
 
-  const handleDrag = useCallback((e: React.DragEvent) => {
+  const handleDrag = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
-  const handleDragState = useCallback((e: React.DragEvent, active: boolean) => {
+  const handleDragState = useCallback((e: DragEvent, active: boolean) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(active);
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    (e: DragEvent) => {
       handleDragState(e, false);
       const file = e.dataTransfer.files?.[0];
-      onFile(file);
+      queueFile(file);
     },
-    [handleDragState, onFile]
+    [handleDragState, queueFile]
   );
+
+  const dropZoneLabelClass = cn(
+    "flex aspect-video w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed p-4 transition-colors",
+    dragActive ? "border-primary bg-accent/40" : "border-border bg-muted/30"
+  );
+
+  const loadedEditor =
+    imageSrc != null ? (
+      <>
+        <section className="flex flex-col gap-3">
+          <LoadedImageSourceSection busy={busy} fileBaseName={fileBaseName} fileInputRef={fileInputRef} />
+        </section>
+        <ImageEditorCropExportPanel
+          aspectPreset={aspectPreset}
+          assetFolders={assetFolders}
+          baseId={baseId}
+          busy={busy}
+          completedCrop={completedCrop}
+          componentImageProps={componentImageProps}
+          crop={crop}
+          cropAspect={cropAspect}
+          cropFrameMode={cropFrameMode}
+          estimateNonce={estimateNonce}
+          estimatePending={estimatePending}
+          estimatedBytes={estimatedBytes}
+          fileBaseName={fileBaseName}
+          folderActionBusy={folderActionBusy}
+          foldersLoading={foldersLoading}
+          heightStr={heightStr}
+          imageSrc={imageSrc}
+          onApplyToCanvas={applyToCanvas}
+          onCreateAssetFolder={createAssetFolderNamed}
+          onCropComplete={onCropComplete}
+          onQualityCommit={() => setEstimateNonce((n) => n + 1)}
+          originalBytes={originalBytes}
+          outputHeight={outputHeight}
+          outputWidth={outputWidth}
+          placement={placement}
+          quality={quality}
+          replaceLibraryAsset={replaceLibraryAsset}
+          selectedAssetFolderId={selectedAssetFolderId}
+          selectedComponentImagePropId={selectedComponentImagePropId}
+          selectedElementType={selectedElementType}
+          componentImagePropsResolving={componentImagePropsResolving}
+          setAspectPreset={setAspectPreset}
+          setCrop={setCrop}
+          setCropFrameMode={setCropFrameMode}
+          setFileBaseName={setFileBaseName}
+          setHeightStr={setHeightStr}
+          setOutputHeight={setOutputHeight}
+          setOutputWidth={setOutputWidth}
+          setPlacement={setPlacement}
+          setQuality={setQuality}
+          setReplaceLibraryAsset={setReplaceLibraryAsset}
+          setSelectedAssetFolderId={setSelectedAssetFolderId}
+          setSelectedComponentImagePropId={setSelectedComponentImagePropId}
+          setWidthStr={setWidthStr}
+          setZoom={setZoom}
+          widthStr={widthStr}
+          zoom={zoom}
+        />
+      </>
+    ) : null;
+
+  const dissolving = dissolve.phase === "dissolving";
 
   return (
     <ScrollArea className="h-full min-h-0 flex-1">
-      <div className="flex flex-col gap-0 pb-1 pr-3">
-        <section className="flex flex-col gap-2 py-1">
-          <h1 className="text-base font-semibold leading-none">Image crop &amp; AVIF</h1>
-          <p className="text-muted-foreground text-xs leading-relaxed">
-            Pan and zoom, use aspect presets or custom output size, tune quality, then place or replace on the canvas.
-          </p>
-        </section>
-
-        <Separator className="my-4" />
-
+      <div className="flex flex-col gap-0 pb-1">
         <section className="flex flex-col gap-3">
           <input
+            ref={fileInputRef}
+            disabled={dissolving}
             id={fileInputId}
             aria-label="Choose image file"
             className="sr-only"
             type="file"
             accept="image/*"
-            onChange={(e) => onFile(e.target.files?.[0])}
+            onChange={(e) => queueFile(e.target.files?.[0])}
           />
-          <label
-            className={
-              dragActive
-                ? "block cursor-pointer rounded-xl border-2 border-dashed border-primary bg-accent/40 p-4 transition-colors"
-                : "block cursor-pointer rounded-xl border-2 border-dashed border-border bg-muted/30 p-4 transition-colors"
-            }
-            htmlFor={fileInputId}
-            onDragEnter={(e) => handleDragState(e, true)}
-            onDragLeave={(e) => handleDragState(e, false)}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-          >
-            <span className="flex flex-col items-center gap-2 text-center">
-              <Upload aria-hidden className="size-8 text-muted-foreground" />
-              <span className="text-muted-foreground text-xs">Drop an image here, or tap to choose a file.</span>
-              <span className="inline-flex items-center gap-1.5 rounded-lg border border-transparent bg-primary px-2.5 py-1 text-[0.8rem] font-medium text-primary-foreground">
-                <FileImage aria-hidden className="size-3.5" />
-                Browse files
-              </span>
-            </span>
-          </label>
-          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void loadFromSelection()}>
-            Use selected Image
-          </Button>
+          {dissolving ? (
+            <div className="relative flex min-w-0 flex-col gap-3">
+              {!showIncomingPreview ? (
+                <div
+                  className={cn(
+                    "flex min-w-0 flex-col gap-3",
+                    OUTGOING_FADE_CLASS,
+                    beginOutgoingFade ? "pointer-events-none opacity-0 delay-[160ms]" : "opacity-100 delay-0"
+                  )}
+                  onTransitionEnd={handleOutgoingFadeComplete}
+                >
+                  {loadedEditor ? (
+                    loadedEditor
+                  ) : (
+                    <EmptyImageSourceSection
+                      dropZoneLabelClass={dropZoneLabelClass}
+                      fileInputId={fileInputId}
+                      handleDrag={handleDrag}
+                      handleDragState={handleDragState}
+                      handleDrop={handleDrop}
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-xl bg-background/80 p-3 shadow-[0_20px_50px_-24px_rgba(0,0,0,0.55)] ring-1 ring-foreground/10 backdrop-blur-sm">
+                  <IncomingDissolvePreview
+                    entered={incomingEnter}
+                    fileBaseName={sanitizeAssetBaseName(
+                      (() => {
+                        const n = dissolve.incomingFile.name;
+                        const stem = n.includes(".") ? n.slice(0, n.lastIndexOf(".")) : n;
+                        return stem || "edited";
+                      })()
+                    )}
+                    imageUrl={dissolve.incomingUrl}
+                    onEntranceComplete={finishDissolve}
+                  />
+                </div>
+              )}
+            </div>
+          ) : !imageSrc ? (
+            <EmptyImageSourceSection
+              dropZoneLabelClass={dropZoneLabelClass}
+              fileInputId={fileInputId}
+              handleDrag={handleDrag}
+              handleDragState={handleDragState}
+              handleDrop={handleDrop}
+            />
+          ) : null}
         </section>
 
-        {imageSrc ? (
-          <>
-            <Separator className="my-4" />
-            <Tabs defaultValue="crop">
-              <TabsList className="grid w-full grid-cols-2" variant="default">
-                <TabsTrigger value="crop">
-                  <Crop aria-hidden className="size-4" />
-                  Crop
-                </TabsTrigger>
-                <TabsTrigger value="export">
-                  <SlidersHorizontal aria-hidden className="size-4" />
-                  Export
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent className="mt-4 flex flex-col gap-0" value="crop">
-                <section className="flex flex-col gap-3">
-                  <div className="relative h-52 w-full overflow-hidden rounded-lg border border-border bg-muted">
-                    <Cropper
-                      aspect={cropAspect}
-                      image={imageSrc}
-                      crop={crop}
-                      zoom={zoom}
-                      onCropChange={setCrop}
-                      onZoomChange={setZoom}
-                      onCropComplete={onCropComplete}
-                      objectFit="contain"
-                    />
-                  </div>
-                </section>
-                <Separator className="my-4" />
-                <section className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label className="text-muted-foreground text-xs" htmlFor={`${baseId}-frame-mode`}>
-                      Crop frame
-                    </Label>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="text-muted-foreground cursor-help text-xs">How it works</span>
-                      </TooltipTrigger>
-                      <TooltipContent side="left">
-                        Aspect presets lock the crop to common ratios. Custom size sets output width and height; the
-                        crop matches that ratio.
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <ToggleGroup
-                    id={`${baseId}-frame-mode`}
-                    className="grid w-full grid-cols-2 gap-1"
-                    type="single"
-                    value={cropFrameMode}
-                    onValueChange={(v) => {
-                      if (v) {
-                        setCropFrameMode(v as CropFrameMode);
-                      }
-                    }}
-                    variant="outline"
-                    size="sm"
-                    spacing={0}
-                  >
-                    <ToggleGroupItem value="aspect">Aspect presets</ToggleGroupItem>
-                    <ToggleGroupItem value="custom">Custom size</ToggleGroupItem>
-                  </ToggleGroup>
-                  {cropFrameMode === "aspect" ? (
-                    <ToggleGroup
-                      id={`${baseId}-aspect`}
-                      className="grid w-full grid-cols-3 gap-1"
-                      type="single"
-                      value={aspectPreset}
-                      onValueChange={(v) => {
-                        if (v) {
-                          setAspectPreset(v as AspectPreset);
-                        }
-                      }}
-                      variant="outline"
-                      size="sm"
-                      spacing={0}
-                    >
-                      <ToggleGroupItem value="free">Free</ToggleGroupItem>
-                      <ToggleGroupItem value="1">1:1</ToggleGroupItem>
-                      <ToggleGroupItem value="16-9">16:9</ToggleGroupItem>
-                      <ToggleGroupItem value="4-3">4:3</ToggleGroupItem>
-                      <ToggleGroupItem value="3-2">3:2</ToggleGroupItem>
-                      <ToggleGroupItem value="9-16">9:16</ToggleGroupItem>
-                    </ToggleGroup>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1.5">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Label htmlFor={`${baseId}-ow`}>Width (px)</Label>
-                          </TooltipTrigger>
-                          <TooltipContent>Output width before encoding (1–8192 px).</TooltipContent>
-                        </Tooltip>
-                        <Input
-                          id={`${baseId}-ow`}
-                          aria-label="Output width in pixels"
-                          inputMode="numeric"
-                          type="text"
-                          value={widthStr}
-                          onChange={(e) => setWidthStr(e.target.value)}
-                          onBlur={() => {
-                            const w = parseOutputDimension(widthStr, outputWidth);
-                            setOutputWidth(w);
-                            setWidthStr(String(w));
-                          }}
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Label htmlFor={`${baseId}-oh`}>Height (px)</Label>
-                          </TooltipTrigger>
-                          <TooltipContent>Output height before encoding (1–8192 px).</TooltipContent>
-                        </Tooltip>
-                        <Input
-                          id={`${baseId}-oh`}
-                          aria-label="Output height in pixels"
-                          inputMode="numeric"
-                          type="text"
-                          value={heightStr}
-                          onChange={(e) => setHeightStr(e.target.value)}
-                          onBlur={() => {
-                            const h = parseOutputDimension(heightStr, outputHeight);
-                            setOutputHeight(h);
-                            setHeightStr(String(h));
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </section>
-                <Separator className="my-4" />
-                <section className="flex flex-col gap-2">
-                  <Label className="text-muted-foreground text-xs" htmlFor={`${baseId}-zoom`}>
-                    Zoom
-                  </Label>
-                  <Slider
-                    id={`${baseId}-zoom`}
-                    min={1}
-                    max={4}
-                    step={0.01}
-                    value={[zoom]}
-                    onValueChange={(v) => setZoom(v[0] ?? 1)}
-                  />
-                </section>
-              </TabsContent>
-              <TabsContent className="mt-4 flex flex-col gap-0" value="export">
-                <section className="flex flex-col gap-1.5">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Label htmlFor={`${baseId}-fn`}>File name</Label>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Base name for the uploaded asset; .avif or .webp is added from the encoder.
-                    </TooltipContent>
-                  </Tooltip>
-                  <Input
-                    id={`${baseId}-fn`}
-                    aria-label="Exported file base name"
-                    autoComplete="off"
-                    value={fileBaseName}
-                    onChange={(e) => setFileBaseName(e.target.value)}
-                    onBlur={() => setFileBaseName(sanitizeAssetBaseName(fileBaseName))}
-                  />
-                </section>
-                <Separator className="my-4" />
-                <section className="flex flex-col gap-2">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Label className="text-muted-foreground text-xs" htmlFor={`${baseId}-quality`}>
-                        Encode quality
-                      </Label>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Higher values preserve more detail and increase file size. Release the slider to refresh the size
-                      estimate.
-                    </TooltipContent>
-                  </Tooltip>
-                  <Slider
-                    id={`${baseId}-quality`}
-                    min={0.05}
-                    max={1}
-                    step={0.01}
-                    value={[quality]}
-                    onValueChange={(v) => setQuality(v[0] ?? 0.75)}
-                    onValueCommit={() => setEstimateNonce((n) => n + 1)}
-                  />
-                  <ExportSizeEstimate
-                    completedCrop={completedCrop}
-                    estimatePending={estimatePending}
-                    estimatedBytes={estimatedBytes}
-                    originalBytes={originalBytes}
-                    showQualityCommitHint={completedCrop !== null && estimateNonce === 0}
-                  />
-                </section>
-                <Separator className="my-4" />
-                <section className="flex items-start gap-2">
-                  <Checkbox id={replaceId} checked={replaceOnly} onCheckedChange={(v) => setReplaceOnly(v === true)} />
-                  <div className="grid gap-1">
-                    <Label className="font-normal" htmlFor={replaceId}>
-                      Replace selected Image only
-                    </Label>
-                    <p className="text-muted-foreground text-xs leading-snug">
-                      Skips placing a new image when an Image is selected. Does not apply when a component instance with
-                      an image prop is selected.
-                    </p>
-                  </div>
-                </section>
-                {componentImageProps.length > 0 ? (
-                  <>
-                    <Separator className="my-4" />
-                    <section className="flex flex-col gap-2">
-                      <Label className="text-muted-foreground text-xs" htmlFor={`${baseId}-comp-prop`}>
-                        Component image prop
-                      </Label>
-                      {componentImageProps.length === 1 ? (
-                        <p className="text-xs leading-snug" id={`${baseId}-comp-prop`}>
-                          Applies to: {componentImageProps[0].label}
-                        </p>
-                      ) : (
-                        <RadioGroup
-                          id={`${baseId}-comp-prop`}
-                          value={selectedComponentImagePropId ?? ""}
-                          onValueChange={(v) => setSelectedComponentImagePropId(v)}
-                        >
-                          {componentImageProps.map((o) => (
-                            <div key={o.propId} className="flex items-center gap-2">
-                              <RadioGroupItem value={o.propId} id={`${baseId}-comp-${o.propId}`} />
-                              <Label className="font-normal" htmlFor={`${baseId}-comp-${o.propId}`}>
-                                {o.label}
-                              </Label>
-                            </div>
-                          ))}
-                        </RadioGroup>
-                      )}
-                    </section>
-                  </>
-                ) : null}
-                <Separator className="my-4" />
-                <section>
-                  <Button type="button" className="w-full" disabled={busy} onClick={() => void applyToCanvas()}>
-                    {busy ? "Working…" : "Compress & place on canvas"}
-                  </Button>
-                </section>
-              </TabsContent>
-            </Tabs>
-          </>
-        ) : (
-          <>
-            <Separator className="my-4" />
-            <p className="text-muted-foreground px-1 text-xs">
-              Upload a file, drop one onto the area above, or load the asset from a selected Image element.
-            </p>
-          </>
-        )}
+        {imageSrc && !dissolving ? <div key={imageSrc}>{loadedEditor}</div> : null}
       </div>
     </ScrollArea>
   );

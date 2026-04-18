@@ -2,7 +2,7 @@ import type { Area } from "react-easy-crop";
 
 import { renderCroppedRegionToCanvas } from "./crop-image";
 import { encodeCanvasToOptimizedFile } from "./encode-image-blob";
-import { placeImageOnCanvasWithAsset } from "./insert-on-canvas";
+import { placeImageOnCanvasAtBody, placeImageOnCanvasWithAsset } from "./insert-on-canvas";
 
 export const MAX_EDGE = 8192;
 export const MIN_EDGE = 1;
@@ -28,6 +28,16 @@ export type ExportResult =
   | { kind: "info"; message: string }
   | { kind: "error"; message: string };
 
+/** Where to put the new image on the canvas. */
+export type PlacementMode = "canvas" | "selection" | "replace";
+
+/** Webflow Designer API `element.type` for Image elements. */
+export const WEBFLOW_IMAGE_ELEMENT_TYPE = "Image" as const;
+
+async function applyAssetFolder(asset: Asset, folder: AssetFolder): Promise<void> {
+  await asset.setParent(folder);
+}
+
 /** Returns a finished result if an image prop was applied; `null` if the instance has no image props. */
 async function tryApplyComponentInstanceImageProp(
   instance: ComponentElement,
@@ -47,7 +57,7 @@ async function tryApplyComponentInstanceImageProp(
     if (!chosen || !imageProps.some((p) => p.propId === chosen)) {
       return {
         kind: "info",
-        message: "Select which component image prop to use, then try again.",
+        message: "Choose a component image field, then try again.",
       };
     }
     propId = chosen;
@@ -55,13 +65,13 @@ async function tryApplyComponentInstanceImageProp(
 
   const match = imageProps.find((p) => p.propId === propId);
   if (!match) {
-    return { kind: "error", message: "Could not resolve the component image prop." };
+    return { kind: "error", message: "Could not resolve the component image field." };
   }
 
   await instance.setProps([{ propId, value: asset.id }]);
   return {
     kind: "success",
-    message: `Image set on “${match.display.label}”.`,
+    message: `Updated “${match.display.label}”.`,
   };
 }
 
@@ -71,10 +81,13 @@ export async function applyCroppedImageToWebflow(options: {
   outputWidth: number;
   outputHeight: number;
   quality: number;
-  replaceOnly: boolean;
   fileBaseName: string;
   /** When the selection has multiple image props, the prop to set (from the panel). */
   componentImagePropId?: string | null;
+  targetFolder: AssetFolder;
+  placement: PlacementMode;
+  /** Only for `placement === "replace"`: update the existing Assets file instead of uploading a new asset. */
+  replaceLibraryAsset: boolean;
 }): Promise<ExportResult> {
   const {
     imageSrc,
@@ -82,17 +95,60 @@ export async function applyCroppedImageToWebflow(options: {
     outputWidth,
     outputHeight,
     quality,
-    replaceOnly,
     fileBaseName,
     componentImagePropId,
+    targetFolder,
+    placement,
+    replaceLibraryAsset,
   } = options;
 
   try {
     const canvas = await renderCroppedRegionToCanvas(imageSrc, completedCrop, outputWidth, outputHeight);
     const { blob, fileName } = await encodeCanvasToOptimizedFile(canvas, quality, { baseName: fileBaseName });
     const file = new File([blob], fileName, { type: blob.type });
-    const asset = await webflow.createAsset(file);
     const sel = await webflow.getSelectedElement();
+
+    if (placement === "canvas") {
+      const asset = await webflow.createAsset(file);
+      await applyAssetFolder(asset, targetFolder);
+      await placeImageOnCanvasAtBody(asset);
+      return { kind: "success", message: "Image added to the page." };
+    }
+
+    if (placement === "replace") {
+      if (sel?.type !== WEBFLOW_IMAGE_ELEMENT_TYPE) {
+        return {
+          kind: "info",
+          message: "Select an Image on the canvas.",
+        };
+      }
+      const img = sel as ImageElement;
+
+      if (replaceLibraryAsset) {
+        const existing = await img.getAsset();
+        if (!existing) {
+          const asset = await webflow.createAsset(file);
+          await applyAssetFolder(asset, targetFolder);
+          await img.setAsset(asset);
+          await webflow.setSelectedElement(img);
+          return { kind: "success", message: "Image applied." };
+        }
+        await existing.setFile(file);
+        await applyAssetFolder(existing, targetFolder);
+        await webflow.setSelectedElement(img);
+        return { kind: "success", message: "Asset file updated." };
+      }
+
+      const asset = await webflow.createAsset(file);
+      await applyAssetFolder(asset, targetFolder);
+      await img.setAsset(asset);
+      await webflow.setSelectedElement(img);
+      return { kind: "success", message: "Image replaced." };
+    }
+
+    // placement === "selection"
+    const asset = await webflow.createAsset(file);
+    await applyAssetFolder(asset, targetFolder);
 
     if (sel?.type === "ComponentInstance") {
       const applied = await tryApplyComponentInstanceImageProp(sel as ComponentElement, asset, componentImagePropId);
@@ -101,20 +157,8 @@ export async function applyCroppedImageToWebflow(options: {
       }
     }
 
-    if (replaceOnly) {
-      if (sel?.type !== "Image") {
-        return {
-          kind: "info",
-          message: "Turn off “Replace selected image” or select an Image element.",
-        };
-      }
-    }
-
-    await placeImageOnCanvasWithAsset(asset, replaceOnly);
-    return {
-      kind: "success",
-      message: replaceOnly ? "Image asset updated." : "Image placed on the canvas.",
-    };
+    await placeImageOnCanvasWithAsset(asset, false);
+    return { kind: "success", message: "Image placed." };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not process the image.";
     return { kind: "error", message };
